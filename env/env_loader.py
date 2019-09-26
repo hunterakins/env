@@ -5,6 +5,8 @@ from pyram.PyRAM import PyRAM
 from copy import deepcopy
 from pyat.pyat.env import SSPraw, HS, TopBndry, BotBndry, Bndry, Source, Pos, Dom, SSP, Beam, cInt
 from pyat.pyat.readwrite import write_env, write_fieldflp
+from swellex_helpers.CTD.read_ctd import parse_prn
+import scipy
 
 '''
 Description:
@@ -107,7 +109,7 @@ class Env:
     def exp_to_json(self, name):
         write_json(name, self.env_dict)
 
-    def pop_Pos(self):
+    def pop_Pos(self, zr_flag=True):
         """
         Initialize a Pos object with field and source params
         Creates an attribute, pos, with the aforementioned Pos object
@@ -115,9 +117,15 @@ class Env:
         """
         sd = self.zs
         s = Source(sd)
-        X = np.arange(self.dr*1e-3, 1e-3*self.rmax+self.dr*1e-3, self.dr*1e-3)
-        Z = np.arange(self.dz, self.zmax+self.dz, self.dz)
-        r = Dom(X, Z)
+        X = np.arange(self.dr, self.rmax+self.dr, self.dr) * 1e-3
+        if zr_flag == True:
+            zr = self.zr
+            if type(zr) == int:
+                zr = [zr]
+            r = Dom(X, zr)
+        else:
+            Z = np.arange(self.dz, self.zmax+self.dz, self.dz)
+            r = Dom(X, Z)
         pos = Pos(s,r)
         pos.s.depth	= [sd]
         pos.Nsd = 1
@@ -125,55 +133,97 @@ class Env:
         self.pos = pos
         return pos
 
-    def write_at_file(self, name):
+    def write_at_file(self, name, zr_flag=True):
+        """
+        Export env info to an .env file for kraken
+        pyram doesn't have a halfspace, whereas kraken does
+        Therefore, take the bottom layer (that's designed to kill the pe field) and turn it into a halfspace
+        """
         cw = self.cw[:,0]
         ssp1 = SSPraw(self.z_ss, cw, np.zeros(cw.shape), np.ones(cw.shape),np.zeros(cw.shape), np.zeros(cw.shape))
         ssps = [ssp1]
-        for i in range(len(self.z_sb)-1):
+        for i in range(len(self.z_sb) -2):
             z_points = [self.z_sb[i], self.z_sb[i+1]]
             c_points = [self.cb[i,0], self.cb[i+1, 0]]
             attn = [self.attn[i,0], self.attn[i+1,0]]
             rhob = [self.rhob[i,0], self.rhob[i+1,0]]
-            print(len(c_points))
             tmp_ssp = SSPraw(z_points, c_points, 
                              [0]*len(c_points),
                              rhob, attn, [0]*len(c_points))
             ssps.append(tmp_ssp)
-        nmedia = len(self.z_sb)
-        print('nmedia', nmedia)
-        depths = [0] + list(self.z_sb)
+        
+        nmedia = len(self.z_sb) - 1 # doesn't include halfspace ?
+        depths = [0] + list(self.z_sb[:-1]) # chop off bottommost point
         lam = 1500 / self.freq
         # 10 points per meters, 1 / lam wavelengths per meter
         N = [int(20 / lam * (np.max(x.z) - np.min(x.z))) for x in ssps] # point per meter
-        print(N)
-        sigma = [0]*len(N)
-        print('depths', depths)
+        sigma = [0]*(nmedia+1)
         ssp = SSP(ssps, depths, nmedia, 'A', N, sigma)
-        print(ssp.depth)
-        # turn last layer into halfspace
-#        hs = HS(self.cb[-1,0], [0], self.rhob[-1,0], self.attn[-1,0], [0])
-        hs = HS()
+        # add  halfspace after last layer
+        hs = HS(self.cb[-1,0], 0, self.rhob[-1,0], self.attn[-1,0], 0)
+#        hs = HS()
         top_bndry = TopBndry('CVW')
         bot_bndry = BotBndry('A', hs)
         bndry = Bndry(top_bndry, bot_bndry)
-        pos = self.pop_Pos()
-        cint = cInt(0, np.mean(self.cb))
+        pos = self.pop_Pos(zr_flag)
+        cint = cInt(np.min(cw), self.cb[0][0])
         beam = None
         write_env(name, 'KRAKEN', 'Auto gen from Env object', self.freq, ssp, bndry, pos, beam, cint, self.rmax)
+        return
 
-    def write_flp(self, name, source_opt):
-        pos = self.pop_Pos()
-        pos.r.range = pos.r.range
+    def write_flp(self, name, source_opt, zr_flag=True):
+        pos = self.pop_Pos(zr_flag)
         write_fieldflp(name, source_opt, pos)
         return
-          
+
+         
+class SwellexEnv(Env):
+    """
+    Inherit from Env, but add some method for swapping out ssp's conveniently using specific swellex EOFs and profiles
+    Default Swellex environment has weirdly spaced depth points, so an interpolating scheme is nevessary to blend in other profiles from the CTD database
+    """
+
+    def change_cw(self, prn_file):
+        """
+        Read in a prn file and overwrite the Env ssp with the prn file ssp
+        All prn files will have z points that are a subset of self.z
+        Therefore interpolating on that segment is fine, and a blending scheme is used to 
+        extrapolate them onto the lower ssp points of the default environment
+        """
+        z, ssp = parse_prn(prn_file)
+        sspf = scipy.interpolate.interp1d(z, ssp)
+        max_depth = np.max(z)
+        lowest_ind = [i for i in range(len(self.z_ss)) if (self.z_ss[i] - max_depth) >0][0] - 1
+        new_cw = sspf(self.z_ss[:lowest_ind])
+        # blend them
+        taper_len,taper_offset = 6, 4
+        if taper_len+lowest_ind < self.z_ss.size:
+            taper_vals = np.zeros(2*taper_len)
+            taper_z = np.zeros(2*taper_len)
+            bottom_vals = self.cw[lowest_ind:lowest_ind+taper_len,0] 
+            top_vals = new_cw[-taper_len-taper_offset:-taper_offset]
+            taper_vals[:taper_len] = top_vals
+            taper_vals[taper_len:] = bottom_vals
+            taper_z[:taper_len] = z[-taper_len:]
+            taper_z[taper_len:] = self.z_ss[lowest_ind:lowest_ind+taper_len]
+            taperf = scipy.interpolate.interp1d(taper_z, taper_vals)
+            new_vals = taperf(z[-taper_len:])
+            new_cw[-taper_len:] = new_vals
+        # smoothly taper to that point
+        self.cw[:new_cw.size,0] = new_cw
+        
+        
+ 
 def env_from_json(name):
     env_dict = read_json(name)
     env_from_dict(env_dict)
     return env
     
-def env_from_dict(env_dict):
-    env = Env(env_dict['z_ss'], env_dict['rp_ss'], env_dict['cw'], env_dict['z_sb'], env_dict['rp_sb'], env_dict['cb'], env_dict['rhob'], env_dict['attn'], env_dict['rbzb'])
+def env_from_dict(env_dict, swellex=False):
+    if swellex==True:
+        env = SwellexEnv(env_dict['z_ss'], env_dict['rp_ss'], env_dict['cw'], env_dict['z_sb'], env_dict['rp_sb'], env_dict['cb'], env_dict['rhob'], env_dict['attn'], env_dict['rbzb'])
+    else:
+        env = Env(env_dict['z_ss'], env_dict['rp_ss'], env_dict['cw'], env_dict['z_sb'], env_dict['rp_sb'], env_dict['cb'], env_dict['rhob'], env_dict['attn'], env_dict['rbzb'])
     return env
     
 class EnvFactory:
