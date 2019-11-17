@@ -4,9 +4,11 @@ from .json_reader import read_json, write_json
 from pyram.PyRAM import PyRAM
 from copy import deepcopy
 from pyat.pyat.env import SSPraw, HS, TopBndry, BotBndry, Bndry, Source, Pos, Dom, SSP, Beam, cInt
-from pyat.pyat.readwrite import write_env, write_fieldflp
+from pyat.pyat.readwrite import write_env, write_fieldflp, read_shd, write_bathy, write_ssp
 from swellex_helpers.CTD.read_ctd import parse_prn
+from pandas import read_feather
 import scipy
+from os import system
 
 '''
 Description:
@@ -109,7 +111,7 @@ class Env:
     def exp_to_json(self, name):
         write_json(name, self.env_dict)
 
-    def pop_Pos(self, zr_flag=True):
+    def pop_Pos(self, zr_flag=True, zr_range_flag=True):
         """
         Initialize a Pos object with field and source params
         Creates an attribute, pos, with the aforementioned Pos object
@@ -122,24 +124,53 @@ class Env:
             zr = self.zr
             if type(zr) == int:
                 zr = [zr]
+            if zr_range_flag == True:
+                print('hiya hunter')
+                X = np.array([X[0], X[-1]]) # only compute last range pos
             r = Dom(X, zr)
         else:
             Z = np.arange(self.dz, self.zmax+self.dz, self.dz)
             r = Dom(X, Z)
         pos = Pos(s,r)
-        pos.s.depth	= [sd]
+        if (type(pos.s.depth) == int) or (type(pos.s.depth) == float):
+            pos.s.depth	= [sd]
+        else:
+            pos.s.depth = sd
         pos.Nsd = 1
         pos.Nrd = len([self.zr])
         self.pos = pos
         return pos
 
-    def write_at_file(self, name, zr_flag=True):
+    def write_env_file(self, name, model='kraken', zr_flag=True, zr_range_flag=True,beam=None):
         """
+        Input 
+        name : string
+            Full path of save location for env file
+        model : string
+            which model to use ('kraken', 'bellhop')
+        zr_flag : bool
+            If true evaluate the field at the zr positions. Otherwise the model will return the field at all the computed field points
+        zr_range_flag : bool
+            If true, only evaluates the field at rmax, the assumed range position. If false, it will evaluate the field at each range point
+        beam : Beam object 
+            For running bellhop, Beam sets parameters for ray trace
+        Output:
+            None. Writes a .env file to the path given in name. 
         Export env info to an .env file for kraken
         pyram doesn't have a halfspace, whereas kraken does
         Therefore, take the bottom layer (that's designed to kill the pe field) and turn it into a halfspace
         """
-        cw = self.cw[:,0]
+        cw_shape = self.cw.shape
+        two_d_flag = False
+        if len(cw_shape) == 2:
+            if cw_shape[1] > 1:
+                print('Two d ssp')
+                two_d_flag = True
+        if two_d_flag == True:
+            print('Writing bathy file')
+            write_bathy(name, self.rbzb)
+            write_ssp(name, self.cw, self.rp_ss)
+        cw = self.cw[:,0] # only use first range prof for env file
         ssp1 = SSPraw(self.z_ss, cw, np.zeros(cw.shape), np.ones(cw.shape),np.zeros(cw.shape), np.zeros(cw.shape))
         ssps = [ssp1]
         for i in range(len(self.z_sb) -2):
@@ -154,7 +185,11 @@ class Env:
         
         nmedia = len(self.z_sb) - 1 # doesn't include halfspace ?
         depths = [0] + list(self.z_sb[:-1]) # chop off bottommost point
-        lam = 1500 / self.freq
+        if self.freq == 0:
+            print('okay')
+            lam = 100 # dummy val
+        else:
+            lam = 1500 / self.freq
         # 10 points per meters, 1 / lam wavelengths per meter
         N = [int(20 / lam * (np.max(x.z) - np.min(x.z))) for x in ssps] # point per meter
         sigma = [0]*(nmedia+1)
@@ -162,19 +197,62 @@ class Env:
         # add  halfspace after last layer
         hs = HS(self.cb[-1,0], 0, self.rhob[-1,0], self.attn[-1,0], 0)
 #        hs = HS()
-        top_bndry = TopBndry('CVW')
+        if two_d_flag == True:
+                top_bndry = TopBndry('QVW')
+        else:
+            top_bndry = TopBndry('CVW')
         bot_bndry = BotBndry('A', hs)
         bndry = Bndry(top_bndry, bot_bndry)
-        pos = self.pop_Pos(zr_flag)
+        pos = self.pop_Pos(zr_flag=zr_flag, zr_range_flag=zr_range_flag)
         cint = cInt(np.min(cw), self.cb[0][0])
-        beam = None
-        write_env(name, 'KRAKEN', 'Auto gen from Env object', self.freq, ssp, bndry, pos, beam, cint, self.rmax)
+        cint = cInt(1470, 1650)
+        write_env(name, model, 'Auto gen from Env object', self.freq, ssp, bndry, pos, beam, cint, self.rmax)
         return
 
-    def write_flp(self, name, source_opt, zr_flag=True):
-        pos = self.pop_Pos(zr_flag)
+    def write_flp(self, name, source_opt, zr_flag=True, zr_range_flag=True):
+        print(zr_range_flag, 'oh no')
+        pos = self.pop_Pos(zr_flag=zr_flag, zr_range_flag=zr_range_flag)
         write_fieldflp(name, source_opt, pos)
         return
+
+    def run_model(self, model, dir_name, name, beam=None,zr_flag=True,zr_range_flag=True):
+        """
+        Inputs
+        model - string
+        dir_name - string
+            Folder in which to store the .env, .flp, and other at_files for the model runs
+            Should be an absolute path, and must end with a '/' for concatenation with tmp_fname
+        name - string 
+            Name of the .env file that will be generated by env.write_env_file
+        beam - Beam object (pyat)
+            beam attributes for bellhop run (angle, ds, etc. see the pyat source)
+        zr_flag - Boolean
+            Should I evaluate the field at only the receiver depths or also at all the intermediate depths required for computing the model?
+        zr_range_flag - Boolean
+            same but for range
+        Output:
+        x - np array of complex128
+            Field evaluated at receiver depths and ranges specified in modification of env object.
+        pos - Pos object from pyat env
+        Instantiates a new attribute self.sim_x to hold computed field and self.sim_pos for pos object
+        """             
+        if model=='kraken':
+            self.write_env_file(dir_name+name, model=model, zr_flag=zr_flag, zr_range_flag=zr_range_flag)
+            system('cd ' + dir_name + ' && /home/hunter/Downloads/at/bin/krakenc.exe ' + name)
+            self.write_flp(dir_name + name, 'R',zr_flag=zr_flag,zr_range_flag=zr_range_flag)
+            system('cd ' + dir_name + ' && /home/hunter/Downloads/at/bin/field.exe ' + name)
+            [ PlotTitle, PlotType, freqVec, atten, pos, pressure ] = read_shd(dir_name + name + '.shd')
+            x = np.squeeze(pressure)
+        elif model=='pe':
+            print('hey man you should implement this')
+        elif model=='bellhop':
+            self.write_env_file(dir_name+name, model=model, zr_flag=zr_flag, beam=beam)
+            system('cd ' + dir_name + ' && /home/hunter/Downloads/at/bin/bellhop.exe ' + name)
+            x = None
+            pos = None
+        else:
+            raise ValueError('model input isn\'t supported')
+        return x, pos
 
          
 class SwellexEnv(Env):
@@ -216,6 +294,8 @@ class SwellexEnv(Env):
  
 def env_from_json(name):
     env_dict = read_json(name)
+    for key in env_dict.keys():
+        print(type(env_dict[key]))
     env_from_dict(env_dict)
     return env
     
@@ -225,6 +305,19 @@ def env_from_dict(env_dict, swellex=False):
     else:
         env = Env(env_dict['z_ss'], env_dict['rp_ss'], env_dict['cw'], env_dict['z_sb'], env_dict['rp_sb'], env_dict['cb'], env_dict['rhob'], env_dict['attn'], env_dict['rbzb'])
     return env
+
+def env_from_iw(name):
+    """
+    Create an env from internal wave model output (2d)
+    Input
+    name - string
+    path of feather file containing IW output
+    """
+    df = feather.read_dataframe(name)
+    z_ss = df['z']
+    rp_ss = df['x']
+    #def __init__(self, z_ss, rp_ss, cw, z_sb, rp_sb, cb, rhob, attn, rbzb):
+    return
     
 class EnvFactory:
     """
