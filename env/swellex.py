@@ -50,7 +50,6 @@ def create_json():
     write_json(root + '/env/swellex/swellex.json', env_inputs)
     return
 
-create_json()
 
 class SwellexBuilder:
     """
@@ -70,3 +69,6 @@ class SwellexBuilder:
         env = env_from_dict(env_dict, swellex=True)
         self._instance = env
         return env
+
+if __name__ == '__main__':
+    create_json()

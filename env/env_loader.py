@@ -28,29 +28,34 @@ def get_custom_r_modal_field(modes, r, zs, zr):
     r - numpy 1d array
         grid of range positions at which to evaluate the field
         IN METERS
-    zs - float or possibly int
-        source depth
+    zs - np array
+        source depths (compute for each depth)
     zr - numpy 1d array of floats (or possibly ints)
         receiver depths
     """
-    krs = modes.k
-    phi = modes.get_receiver_modes(zs, zr)
-    strength = modes.get_source_strength(zs)
-    modal_matrix = strength*phi
-    r_mat= np.outer(krs, r)
-    """
-    Note...kraken c seems to want the imaginary part of 
-    the eigenvalues to be negative...it is probably just the 
-    Fourier transform convention they use in the
-    Hankel transform approximation (I'm used to 
-    exp(-iomega t[n]) being the forward transform...)
-    As a result, with my modal convention, I need to conjugate the 
-    imaginary part to get appropriate loss 
-    """
-    range_dep = np.exp(complex(0,1)*r_mat.conj()) / np.sqrt(r_mat.real)
-    p = modal_matrix@range_dep
-    p *= -np.exp(complex(0, 1)*np.pi/4)
-    p /= np.sqrt(8*np.pi)
+    if type(zs) == int or type(zs) == float:
+        zs = np.array([zs])
+    p = np.zeros((len(zs), len(zr), len(r)), dtype=np.complex128)
+    for index, source_depth in enumerate(zs):
+        krs = modes.k
+        phi = modes.get_receiver_modes(zr)
+        strength = modes.get_source_strength(source_depth)
+        modal_matrix = strength*phi
+        r_mat= np.outer(krs, r)
+        """
+        Note...kraken c seems to want the imaginary part of 
+        the eigenvalues to be negative...it is probably just the 
+        Fourier transform convention they use in the
+        Hankel transform approximation (I'm used to 
+        exp(-iomega t[n]) being the forward transform...)
+        As a result, with my modal convention, I need to conjugate the 
+        imaginary part to get appropriate loss 
+        """
+        range_dep = np.exp(complex(0,1)*r_mat.conj()) / np.sqrt(r_mat.real)
+        source_p = modal_matrix@range_dep
+        source_p *= -np.exp(complex(0, 1)*np.pi/4)
+        source_p /= np.sqrt(8*np.pi)
+        p[index, :,:] = source_p
     return p
 
 class Env:
@@ -162,7 +167,7 @@ class Env:
         if zr_flag == True:
             zr = self.zr
             if type(zr) == int:
-                zr = [zr]
+                zr = np.array([zr])
             if zr_range_flag == True:
                 X = np.array([X[-1]]) # only compute last range pos
             r = Dom(X, zr)
@@ -266,6 +271,8 @@ class Env:
             Should I evaluate the field at only the receiver depths (True) or also at all the intermediate depths required for computing the model (False)?
         zr_range_flag - Boolean
             same but for range
+        custom_r - numpy array
+            range in METERS
         Output:
         x - np array of complex128
             Field evaluated at receiver depths and ranges specified in modification of env object.
@@ -373,7 +380,6 @@ class SwellexEnv(Env):
         #self.attn = attn
         #self.rbzb = rbzb
         self.env_dict = self.init_dict()
-    
  
 def env_from_json(name):
     env_dict = read_json(name)
