@@ -58,6 +58,19 @@ def get_custom_r_modal_field(modes, r, zs, zr):
         p[index, :,:] = source_p
     return p
 
+
+def get_sea_surface(cw):
+    """
+    Generate a little sine wave surface for 
+    making graphics """
+    min_c = np.min(cw)
+    max_c = np.max(cw)
+    crange = max_c - min_c
+    lam = crange / 5
+    x = np.linspace(min_c, max_c, 1000)
+    y = np.sin(2*np.pi*x/lam)
+    return x, y
+
 class Env:
     """
     Hold information related to the environment for model runs
@@ -322,6 +335,31 @@ class Env:
         print(rp_ss)
         self.cw = ssp
         return
+
+    def gen_env_fig(self, rs):
+        """
+        Generate a figure showing the SSP, receiver locations, source location
+         and some text with the source frequency
+        Pass in the source range zr """
+        fig, ax1 = plt.subplots()
+        ax2 = ax1.twiny()
+        zr = self.zr
+        zs = self.zs
+        x, y = get_sea_surface(self.cw)
+        ax1.plot([np.min(self.cw), np.max(self.cw)], [self.z_sb[0]]*2, color='tab:brown')
+        ax1.plot(x, y, color='b')
+        ax1.set_xlabel('SSP (m/s)')
+        ax1.set_ylabel('Depth (m)')
+        ax2.set_xlabel('Range (m)')
+        ax1.invert_yaxis()
+        ax2.scatter(0, zr[0], color='k', alpha=1, label='SSP')
+        ax2.scatter([0]*zr.size, zr, color='r', label='Receive array')
+        ax2.scatter(rs, zs, color='b', marker='+', label='Source position')
+        ax1.plot(self.cw, self.z_ss, color='k', label='SSP')
+        fig.suptitle('Environmental configuration\n(Source frequency is ' + str(self.freq) + ' Hz)')
+        ax2.legend()
+        return fig
+        
          
 class SwellexEnv(Env):
     """
