@@ -236,16 +236,16 @@ class Env:
         """             
         if model=='kraken':
             self.write_env_file(dir_name+name, model=model, zr_flag=zr_flag, zr_range_flag=zr_range_flag, custom_r=custom_r)
-            system('cd ' + dir_name + ' && /home/hunter/Downloads/at/bin/krakenc.exe ' + name)
+            system('cd ' + dir_name + ' && krakenc.exe ' + name)
             self.write_flp(dir_name + name, 'R',zr_flag=zr_flag,zr_range_flag=zr_range_flag, custom_r=custom_r)
-            system('cd ' + dir_name + ' && /home/hunter/Downloads/at/bin/field.exe ' + name)
+            system('cd ' + dir_name + ' && field.exe ' + name)
             [ PlotTitle, PlotType, freqVec, atten, pos, pressure ] = read_shd(dir_name + name + '.shd')
             x = np.squeeze(pressure)
         elif model=='pe':
             print('hey man you should implement this')
         elif model=='bellhop':
             self.write_env_file(dir_name+name, model=model, zr_flag=zr_flag, beam=beam, zr_range_flag=zr_range_flag,custom_r=custom_r)
-            system('cd ' + dir_name + ' && /home/hunter/Downloads/at/bin/bellhop.exe ' + name)
+            system('cd ' + dir_name + ' && bellhop.exe ' + name)
             x = None
             pos = None
         else:
