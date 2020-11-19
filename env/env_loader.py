@@ -4,7 +4,7 @@ from .json_reader import read_json, write_json
 from pyram.pyram.PyRAM import PyRAM
 from copy import deepcopy
 from pyat.pyat.env import SSPraw, HS, TopBndry, BotBndry, Bndry, Source, Pos, Dom, SSP, Beam, cInt
-from pyat.pyat.readwrite import write_env, write_fieldflp, read_shd, write_bathy, write_ssp
+from pyat.pyat.readwrite import write_env, write_fieldflp, read_shd, write_bathy, write_ssp, read_modes
 from swellex.CTD.read_ctd import parse_prn
 from pandas import read_feather
 import scipy
@@ -17,6 +17,59 @@ class to retrieve environmental parameters for running models
 
 Author: Hunter Akins
 '''
+
+def get_custom_r_modal_field(modes, r, zs, zr):
+    """
+    Given modal object, range grid r, source depth zs 
+    and receiver depths zr (corresponding to the modes obj)
+    Compute the field at the grid (zr X r)
+    Input
+    modes - Modes obj (pyat)
+    r - numpy 1d array
+        grid of range positions at which to evaluate the field
+        IN METERS
+    zs - np array
+        source depths (compute for each depth)
+    zr - numpy 1d array of floats (or possibly ints)
+        receiver depths
+    """
+    if type(zs) == int or type(zs) == float:
+        zs = np.array([zs])
+    p = np.zeros((len(zs), len(zr), len(r)), dtype=np.complex128)
+    for index, source_depth in enumerate(zs):
+        krs = modes.k
+        phi = modes.get_receiver_modes(zr)
+        strength = modes.get_source_strength(source_depth)
+        modal_matrix = strength*phi
+        r_mat= np.outer(krs, r)
+        """
+        Note...kraken c seems to want the imaginary part of 
+        the eigenvalues to be negative...it is probably just the 
+        Fourier transform convention they use in the
+        Hankel transform approximation (I'm used to 
+        exp(-iomega t[n]) being the forward transform...)
+        As a result, with my modal convention, I need to conjugate the 
+        imaginary part to get appropriate loss 
+        """
+        range_dep = np.exp(complex(0,1)*r_mat.conj()) / np.sqrt(r_mat.real)
+        source_p = modal_matrix@range_dep
+        source_p *= -np.exp(complex(0, 1)*np.pi/4)
+        source_p /= np.sqrt(8*np.pi)
+        p[index, :,:] = source_p
+    return p
+
+
+def get_sea_surface(cw):
+    """
+    Generate a little sine wave surface for 
+    making graphics """
+    min_c = np.min(cw)
+    max_c = np.max(cw)
+    crange = max_c - min_c
+    lam = crange / 5
+    x = np.linspace(min_c, max_c, 1000)
+    y = np.sin(2*np.pi*x/lam)
+    return x, y
 
 class Env:
     """
@@ -117,6 +170,9 @@ class Env:
         Initialize a Pos object with field and source params
         Creates an attribute, pos, with the aforementioned Pos object
         returns a Pos object, pos
+        if zr_flag is true, field is evaluated at receiver positions
+        It seems that rmax and dr are given in meters, but I convert them
+        to km in Pos (since the models run on km)
         """
         sd = self.zs
         s = Source(sd)
@@ -124,9 +180,9 @@ class Env:
         if zr_flag == True:
             zr = self.zr
             if type(zr) == int:
-                zr = [zr]
+                zr = np.array([zr])
             if zr_range_flag == True:
-                X = np.array([X[0], X[-1]]) # only compute last range pos
+                X = np.array([X[-1]]) # only compute last range pos
             r = Dom(X, zr)
         else:
             Z = np.arange(self.dz, self.zmax+self.dz, self.dz)
@@ -139,7 +195,7 @@ class Env:
         pos.Nsd = 1
         pos.Nrd = len([self.zr])
         if type(custom_r) != type(None):
-            pos.r.range = custom_r
+            pos.r.range = custom_r*1e-3
         self.pos = pos
         return pos
 
@@ -228,6 +284,8 @@ class Env:
             Should I evaluate the field at only the receiver depths (True) or also at all the intermediate depths required for computing the model (False)?
         zr_range_flag - Boolean
             same but for range
+        custom_r - numpy array
+            range in METERS
         Output:
         x - np array of complex128
             Field evaluated at receiver depths and ranges specified in modification of env object.
@@ -248,6 +306,14 @@ class Env:
             system('cd ' + dir_name + ' && bellhop.exe ' + name)
             x = None
             pos = None
+        elif model=='kraken_custom_r':
+            self.write_env_file(dir_name+name, model='kraken', zr_flag=zr_flag, zr_range_flag=zr_range_flag, custom_r=custom_r)
+            system('cd ' + dir_name + ' && krakenc.exe ' + name)
+            fname = dir_name + name + '.mod'
+            modes = read_modes(**{'fname':fname, 'freq':self.freq})
+            self.modes = modes
+            pos = self.pos
+            x = get_custom_r_modal_field(modes, custom_r, self.zs, pos.r.depth)
         else:
             raise ValueError('model input isn\'t supported')
         return x, pos
@@ -266,8 +332,34 @@ class Env:
         ssp = df['c'].unique().reshape(rp_ss.size, z_ss.size)
         self.z_ss = z_ss
         self.rp_ss = rp_ss
+        print(rp_ss)
         self.cw = ssp
         return
+
+    def gen_env_fig(self, rs):
+        """
+        Generate a figure showing the SSP, receiver locations, source location
+         and some text with the source frequency
+        Pass in the source range zr """
+        fig, ax1 = plt.subplots()
+        ax2 = ax1.twiny()
+        zr = self.zr
+        zs = self.zs
+        x, y = get_sea_surface(self.cw)
+        ax1.plot([np.min(self.cw), np.max(self.cw)], [self.z_sb[0]]*2, color='tab:brown')
+        ax1.plot(x, y, color='b')
+        ax1.set_xlabel('SSP (m/s)')
+        ax1.set_ylabel('Depth (m)')
+        ax2.set_xlabel('Range (m)')
+        ax1.invert_yaxis()
+        ax2.scatter(0, zr[0], color='k', alpha=1, label='SSP')
+        ax2.scatter([0]*zr.size, zr, color='r', label='Receive array')
+        ax2.scatter(rs, zs, color='b', marker='+', label='Source position')
+        ax1.plot(self.cw, self.z_ss, color='k', label='SSP')
+        fig.suptitle('Environmental configuration\n(Source frequency is ' + str(self.freq) + ' Hz)')
+        ax2.legend()
+        return fig
+        
          
 class SwellexEnv(Env):
     """
@@ -303,6 +395,29 @@ class SwellexEnv(Env):
             new_cw[-taper_len:] = new_vals
         # smoothly taper to that point
         self.cw[:new_cw.size,0] = new_cw
+
+    def change_depth(self, D):
+        """ Update the Swellex environment 
+        to be at a new depth D
+        Shift bottom down accordingly"""
+        self.z_ss = np.array([x for x in self.z_ss if x <= D])
+        diff = D-self.z_sb[0]
+        self.z_sb += diff
+        self.cw = self.cw[:self.z_ss.size]
+        """ Make sure cw has a point at D """
+        if D not in self.z_ss:
+            self.z_ss = np.append(self.z_ss, D)
+            print(self.cw.shape)
+            self.cw = np.append(self.cw, self.cw[-1]).reshape(self.cw.size+1, 1)
+        self.zmax = D
+        self.add_field_params(self.dz, D, self.dr, self.rmax)
+        #self.z_sb = z_sb
+        #self.rp_sb = rp_sb
+        #self.cb = cb
+        #self.rhob = rhob
+        #self.attn = attn
+        #self.rbzb = rbzb
+        self.env_dict = self.init_dict()
  
 def env_from_json(name):
     env_dict = read_json(name)
