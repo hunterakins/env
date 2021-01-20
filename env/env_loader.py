@@ -20,7 +20,7 @@ Author: Hunter Akins
 
 def get_custom_r_modal_field(modes, r, zs, zr):
     """
-    Given modal object, range grid r, source depth zs 
+    Given modal object, range grid r, source depth(s) zs 
     and receiver depths zr (corresponding to the modes obj)
     Compute the field at the grid (zr X r)
     Input
@@ -43,21 +43,29 @@ def get_custom_r_modal_field(modes, r, zs, zr):
         modal_matrix = strength*phi
         r_mat= np.outer(krs, r)
         """
-        Note...kraken c seems to want the imaginary part of 
-        the eigenvalues to be negative...it is probably just the 
-        Fourier transform convention they use in the
-        Hankel transform approximation (I'm used to 
-        exp(-iomega t[n]) being the forward transform...)
-        As a result, with my modal convention, I need to conjugate the 
-        imaginary part to get appropriate loss 
+        Note...kraken c has the attenuation as a negative
+        imaginary part to k
+        The implied convention is exp(-i k r) transform...
         """
         range_dep = np.exp(complex(0,1)*r_mat.conj()) / np.sqrt(r_mat.real)
         source_p = modal_matrix@range_dep
         source_p *= -np.exp(complex(0, 1)*np.pi/4)
         source_p /= np.sqrt(8*np.pi)
+        source_p = source_p.conj()
         p[index, :,:] = source_p
     return p
 
+def get_custom_r_linear_adiabatic_field(modes, r, zs, zr, depth_r, delta_k):
+    """
+    Calculate the field due to a source at depth(s) zs,
+    received at the origin at depths zr.
+    for each of the ranges in r, the source is at a depth
+    depth_r. 
+    There is a corresponding delta_k that applies to a bathymetric
+    change from depth_r to the bathymetry at the origin.
+    Ignores new modes appearing...
+    """
+    receiver_depth_k = modes.k
 
 def get_sea_surface(cw):
     """
@@ -229,18 +237,18 @@ class Env:
         cw = self.cw[:,0] # only use first range prof for env file
         ssp1 = SSPraw(self.z_ss, cw, np.zeros(cw.shape), np.ones(cw.shape),np.zeros(cw.shape), np.zeros(cw.shape))
         ssps = [ssp1]
-        for i in range(len(self.z_sb) -2):
-            z_points = [self.z_sb[i], self.z_sb[i+1]]
-            c_points = [self.cb[i,0], self.cb[i+1, 0]]
-            attn = [self.attn[i,0], self.attn[i+1,0]]
-            rhob = [self.rhob[i,0], self.rhob[i+1,0]]
+        nmedia = len(self.z_sb)//2 +1
+        for i in range(nmedia-1): # ignore the water layer
+            z_points = [self.z_sb[2*i], self.z_sb[2*i+1]]
+            c_points = [self.cb[2*i,0], self.cb[2*i+1, 0]]
+            attn = [self.attn[2*i,0], self.attn[2*i+1,0]]
+            rhob = [self.rhob[2*i,0], self.rhob[2*i+1,0]]
             tmp_ssp = SSPraw(z_points, c_points, 
                              [0]*len(c_points),
                              rhob, attn, [0]*len(c_points))
             ssps.append(tmp_ssp)
-        
-        nmedia = len(self.z_sb) - 1 # doesn't include halfspace ?
-        depths = [0] + list(self.z_sb[:-1]) # chop off bottommost point
+        depths = [0] + list(set(list(self.z_sb)))
+        depths.sort()
         if self.freq == 0:
             lam = 100 # dummy val
         else:
@@ -313,7 +321,10 @@ class Env:
             modes = read_modes(**{'fname':fname, 'freq':self.freq})
             self.modes = modes
             pos = self.pos
-            x = get_custom_r_modal_field(modes, custom_r, self.zs, pos.r.depth)
+            if zr_flag == True:
+                x = get_custom_r_modal_field(modes, custom_r, self.zs, self.zr)
+            else:
+                x = get_custom_r_modal_field(modes, custom_r, self.zs, pos.r.depth)
         else:
             raise ValueError('model input isn\'t supported')
         return x, pos
@@ -360,7 +371,6 @@ class Env:
         ax2.legend()
         return fig
         
-         
 class SwellexEnv(Env):
     """
     Inherit from Env, but add some method for swapping out ssp's conveniently using specific swellex EOFs and profiles
