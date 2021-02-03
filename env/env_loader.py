@@ -6,6 +6,8 @@ from copy import deepcopy
 from pyat.pyat.env import SSPraw, HS, TopBndry, BotBndry, Bndry, Source, Pos, Dom, SSP, Beam, cInt
 from pyat.pyat.readwrite import write_env, write_fieldflp, read_shd, write_bathy, write_ssp, read_modes
 from swellex.CTD.read_ctd import parse_prn
+from scipy.interpolate import interp1d
+from env.env.s5_helpers import s5_approach_D, get_range_correction
 from pandas import read_feather
 import scipy
 import feather
@@ -55,17 +57,6 @@ def get_custom_r_modal_field(modes, r, zs, zr):
         p[index, :,:] = source_p
     return p
 
-def get_custom_r_linear_adiabatic_field(modes, r, zs, zr, depth_r, delta_k):
-    """
-    Calculate the field due to a source at depth(s) zs,
-    received at the origin at depths zr.
-    for each of the ranges in r, the source is at a depth
-    depth_r. 
-    There is a corresponding delta_k that applies to a bathymetric
-    change from depth_r to the bathymetry at the origin.
-    Ignores new modes appearing...
-    """
-    receiver_depth_k = modes.k
 
 def get_sea_surface(cw):
     """
@@ -370,6 +361,7 @@ class Env:
         fig.suptitle('Environmental configuration\n(Source frequency is ' + str(self.freq) + ' Hz)')
         ax2.legend()
         return fig
+
         
 class SwellexEnv(Env):
     """
@@ -415,9 +407,9 @@ class SwellexEnv(Env):
         self.z_sb += diff
         self.cw = self.cw[:self.z_ss.size]
         """ Make sure cw has a point at D """
-        if D not in self.z_ss:
+        """ AT rounds to nearest hundredth """
+        if round(float(D),2) not in [round(x,2) for x in list(self.z_ss)]:
             self.z_ss = np.append(self.z_ss, D)
-            print(self.cw.shape)
             self.cw = np.append(self.cw, self.cw[-1]).reshape(self.cw.size+1, 1)
         self.zmax = D
         self.add_field_params(self.dz, D, self.dr, self.rmax)
@@ -428,6 +420,95 @@ class SwellexEnv(Env):
         #self.attn = attn
         #self.rbzb = rbzb
         self.env_dict = self.init_dict()
+        return
+
+    def s5_approach_adiabatic_replicas(self, dir_name, name, r, tilt_angle=0): 
+        """
+        For source candidates at elements of array pos.r.depth, 
+        and given array r
+        compute the field received at array zr
+        Use the s5 bathymetry data to get source depth at each
+        candidate range
+        Assume linear bathymetry from D(receiver) to D source
+        Omit modes that aren't excited at the source location
+
+        I assume that the receiver positions have set as the source positions zs
+        This ensures that the modes have been evaluated at the receiver depths
+        Setting zr_flag to false below ensures that they have also been evaluated at each 
+        candidate source depth
+
+        """
+
+        """ Get modes at receive array """
+        self.run_model('kraken_custom_r', dir_name, name, zr_range_flag=False, zr_flag = False, custom_r = np.array([100]))
+        rcvr_modes = self.modes
+        num_rcvr_modes = rcvr_modes.M
+        rcvr_kr = rcvr_modes.k
+        phi_rcvr = rcvr_modes.get_receiver_modes(self.zs)
+        print('num_rcvr_modes', num_rcvr_modes)
+
+        dofr = s5_approach_D()
+        depths = dofr(r)
+        min_depth = np.min(depths)
+        self.add_field_params(self.dz, min_depth, self.dr, self.rmax)
+        self.pop_Pos(zr_flag=False)
+        official_depth_grid = self.pos.r.depth # depth changes
+        num_depths = self.pos.r.depth.size
+        last_D = -10 # dummy value
+
+        p = np.zeros((len(self.zs), self.pos.r.depth.size, r.size), dtype=np.complex128)
+
+        """ Tilt angle correction """
+        range_correction = get_range_correction(self.zs, tilt_angle)
+
+
+        for r_ind, source_r in enumerate(r):
+            D = dofr(source_r) 
+
+            if abs(D - last_D) > 1:
+                """ Recomputing modes """
+                last_D = D
+                self.change_depth(D)
+                """ OVerride change to field params """
+                self.add_field_params(self.dz, min_depth, self.dr, self.rmax)
+                self.pop_Pos(zr_flag=False)
+                self.run_model('kraken_custom_r', dir_name, name, zr_range_flag=False, zr_flag = False, custom_r = np.array([100]))
+                source_modes = self.modes
+                num_source_modes = source_modes.M
+                phi_range = source_modes.get_receiver_modes(self.pos.r.depth[:num_depths])
+                source_krs = source_modes.k
+                num_modes = np.min([num_source_modes, num_rcvr_modes])
+                source_krs = source_modes.k[:num_modes]
+                relevant_rcvr_kr = rcvr_kr[:num_modes] 
+                delta_kr = source_krs - relevant_rcvr_kr
+                delta_kr = delta_kr.real # no need to worry about attenuation correction...I hope
+                delta_kr = delta_kr.reshape((1, delta_kr.size))
+                """ Get mode source excitation for each candidate depth """
+                phi_source = source_modes.get_receiver_modes(self.pos.r.depth) 
+                phi_source = phi_source[:, :num_modes]
+
+            for rcvr_ind, source_depth in enumerate(self.zs):
+                """ Get mode strength at the receiver specific """
+                phi_tmp = rcvr_modes.get_source_strength(source_depth)
+                """ Truncate shapes """
+                phi_tmp = phi_tmp[0,:num_modes] 
+                modal_matrix = phi_tmp * phi_source #column mat
+                corrected_kr = relevant_rcvr_kr + delta_kr/2
+                corrected_source_r = source_r - range_correction[rcvr_ind]
+                r_mat= np.outer(corrected_kr, corrected_source_r)
+                #depth_correction_mat = np.outer(delta_kr /2, source_r)
+                """
+                Note...kraken c has the attenuation as a negative
+                imaginary part to k
+                The implied convention is exp(-i k r) transform...
+                """
+                range_dep = np.exp(complex(0,1)*r_mat.conj()) / np.sqrt(r_mat.real)
+                source_p = modal_matrix@range_dep
+                source_p *= -np.exp(complex(0, 1)*np.pi/4)
+                source_p /= np.sqrt(8*np.pi)
+                source_p = source_p.conj()
+                p[rcvr_ind, :, r_ind] = source_p[:,0]
+        return p, self.pos
  
 def env_from_json(name):
     env_dict = read_json(name)
@@ -464,5 +545,6 @@ class EnvFactory:
             raise KeyError(key)
         return builder(**kwargs)
         
+
         
     
