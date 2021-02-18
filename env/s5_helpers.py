@@ -77,7 +77,6 @@ def s5_approach_D():
     d_r = interp1d(r_appr, z_appr)
     return d_r
 
-
 def get_range_correction(zr, tilt_angle):
     """
     For receiving array tilted at angle tilt_angle (degrees)

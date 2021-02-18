@@ -20,7 +20,7 @@ class to retrieve environmental parameters for running models
 Author: Hunter Akins
 '''
 
-def get_custom_r_modal_field(modes, r, zs, zr):
+def get_custom_r_modal_field(modes, r, zs, zr, tilt_angle=0):
     """
     Given modal object, range grid r, source depth(s) zs 
     and receiver depths zr (corresponding to the modes obj)
@@ -37,13 +37,14 @@ def get_custom_r_modal_field(modes, r, zs, zr):
     """
     if type(zs) == int or type(zs) == float:
         zs = np.array([zs])
+    r_corr = get_range_correction(zs, tilt_angle)
     p = np.zeros((len(zs), len(zr), len(r)), dtype=np.complex128)
     for index, source_depth in enumerate(zs):
         krs = modes.k
         phi = modes.get_receiver_modes(zr)
         strength = modes.get_source_strength(source_depth)
         modal_matrix = strength*phi
-        r_mat= np.outer(krs, r)
+        r_mat= np.outer(krs, r-r_corr[index])
         """
         Note...kraken c has the attenuation as a negative
         imaginary part to k
@@ -56,7 +57,6 @@ def get_custom_r_modal_field(modes, r, zs, zr):
         source_p = source_p.conj()
         p[index, :,:] = source_p
     return p
-
 
 def get_sea_surface(cw):
     """
@@ -268,7 +268,7 @@ class Env:
         write_fieldflp(name, source_opt, pos)
         return
 
-    def run_model(self, model, dir_name, name, beam=None,zr_flag=True,zr_range_flag=True, custom_r=None):
+    def run_model(self, model, dir_name, name, beam=None,zr_flag=True,zr_range_flag=True, custom_r=None, tilt_angle=0):
         """
         Inputs
         model - string
@@ -313,9 +313,9 @@ class Env:
             self.modes = modes
             pos = self.pos
             if zr_flag == True:
-                x = get_custom_r_modal_field(modes, custom_r, self.zs, self.zr)
+                x = get_custom_r_modal_field(modes, custom_r, self.zs, self.zr, tilt_angle=tilt_angle)
             else:
-                x = get_custom_r_modal_field(modes, custom_r, self.zs, pos.r.depth)
+                x = get_custom_r_modal_field(modes, custom_r, self.zs, pos.r.depth, tilt_angle=tilt_angle)
         else:
             raise ValueError('model input isn\'t supported')
         return x, pos

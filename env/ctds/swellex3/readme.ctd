@@ -1,0 +1,24 @@
+
+SWellEX-3 CTD Profiles
+
+The SWellEX-3 CTD Profiles, this "readme" file, and an extract of
+the CTD Log are now on the 'ftp/outgoing/swellex3/env/ctd'
+directory.
+
+The data files in the directory are those files interpolated at 0.5
+m increments. The columns are: depth (m), temperature (deg C),
+salinity (PSU or equivalently ppt), sound speed (m/sec Chen-
+Millero), sigma-t, dynamic anomaly, and the dynamic height summed
+from the surface downward.
+
+The files are named ISW3xxx.PRN, where xxx refers to the master
+station number in the CTD Log file.
+
+I have plotted most of the profiles and they look OK. There are a
+few stations where the salinity may be in question. These are noted
+in the log. I will check these out as soon as possible.
+
+Please let me know if there are any problems or if you need
+additional information.
+
+John Newton (newtonj@nosc.mil) (619) 553-3097
