@@ -79,7 +79,7 @@ class SWMFEXBuilder:
             z_sb = kwargs['z_sb']
         if 'ctd_num' in kwargs.keys():
             print('updating dfault profile to use CTD ' + str(kwargs['ctd_num']))
-            z_ss, rp_ss, cw = get_ssp_info(kwargs['ctd_num'])
+            z_ss, rp_ss, cw = get_ssp_info(kwargs['ctd_num'],zmax)
         env = Env(z_ss, rp_ss, cw, z_sb, rp_sb, cb, rhob, attn, rbzb)
         self._instance = env
         return env
