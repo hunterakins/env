@@ -23,9 +23,10 @@ def extrap_top_pt(ctd_arr):
     Just double it...(assumes constant sound speed near surface (down to ctd_arr[0,0])
     """
     z0 = ctd_arr[0,0]
-    c0 = ctd_arr[0,1]
-    new_row = np.array([0.1, c0]).reshape(1,2)
-    ctd_arr = np.vstack((new_row, ctd_arr))
+    if z0 > 0.1:
+        c0 = ctd_arr[0,1]
+        new_row = np.array([0.1, c0]).reshape(1,2)
+        ctd_arr = np.vstack((new_row, ctd_arr))
     return ctd_arr
 
 def get_ssp_info(ctd_num, zmax):
