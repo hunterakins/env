@@ -35,7 +35,7 @@ def get_custom_r_modal_field(modes, r, zs, zr, tilt_angle=0):
     zr - numpy 1d array of floats (or possibly ints)
         receiver depths
     """
-    if type(zs) == int or type(zs) == float:
+    if (type(zs) == int) or (type(zs) == float) or (type(zs) == np.float64):
         zs = np.array([zs])
     r_corr = get_range_correction(zs, tilt_angle)
     p = np.zeros((len(zs), len(zr), len(r)), dtype=np.complex128)
@@ -55,8 +55,48 @@ def get_custom_r_modal_field(modes, r, zs, zr, tilt_angle=0):
         source_p *= -np.exp(complex(0, 1)*np.pi/4)
         source_p /= np.sqrt(8*np.pi)
         source_p = source_p.conj()
-        p[index, :,:] = source_p
+        p[index, ...] = source_p
     return p
+
+def get_custom_track_modal_field(modes, r, zs, zr, tilt_angle=0):
+    """
+    Use modes to compute the field from a single source moving at a track r[i], zs[i]
+    Not good for computing replicas 
+
+    Input
+    modes - Modes obj (pyat)
+    r - numpy 1d array
+        grid of range positions at which to evaluate the field
+        IN METERS
+    zs - np 1d array
+        source depths, same dim as r
+    zr - numpy 1d array of floats (or possibly ints)
+        receiver depths
+    """
+    r_corr = get_range_correction(zr, tilt_angle)
+    p = np.zeros((len(zs), len(zr), len(r)), dtype=np.complex128)
+    phi = modes.get_receiver_modes(zr)
+    strengths = modes.get_source_excitation(zs) # dimension is r.size, num_modes
+    krs = modes.k
+    modal_matrix = phi
+
+    """ Apply tilt corrections to receiver """
+    corr_arg = np.outer(r_corr, krs)
+    range_corr_fact = np.exp(complex(0,-1)*corr_arg.conj())
+    modal_matrix *= range_corr_fact
+    r_mat= np.outer(krs, r)
+    """
+    Note...kraken c has the attenuation as a negative
+    imaginary part to k
+    The implied convention is exp(-i k r) transform...
+    """
+    range_dep = np.exp(complex(0,1)*r_mat.conj()) / np.sqrt(r_mat.real)
+    range_dep *= strengths.T
+    source_p = modal_matrix@range_dep
+    source_p *= -np.exp(complex(0, 1)*np.pi/4)
+    source_p /= np.sqrt(8*np.pi)
+    source_p = source_p.conj()
+    return source_p
 
 def get_sea_surface(cw):
     """
@@ -124,7 +164,7 @@ class Env:
         self.dr = dr
         self.rmax = rmax
         if zmplt is None:
-            zmplt = np.max(self.rbzb)
+            zmplt = np.max(self.rbzb[:,1])
         self.zmplt = zmplt
         self.env_dict['dz'] = dz
         self.env_dict['zmax'] = zmax
@@ -153,6 +193,7 @@ class Env:
         """
         #freq, zs, zr, z_ss, rp_ss, cw = self.env_dict['freq'], self.env_dict['zs'], self.env_dict['zr'], self.env_dict['z_ss'], self.env_dict['rp_ss'], self.env_dict['cw']  
         env_dict = deepcopy(self.env_dict)
+        print("WARNING: THIS WILL ONLY WORK IF ZR AND ZS ARE FLOATS, NOT ARRAYS")
         pyram = PyRAM(env_dict['freq'], env_dict['zs'], env_dict['zr'],
                       env_dict['z_ss'], env_dict['rp_ss'], env_dict['cw'],
                       env_dict['z_sb'], env_dict['rp_sb'], env_dict['cb'],
@@ -175,7 +216,7 @@ class Env:
         """
         sd = self.zs
         s = Source(sd)
-        X = np.arange(self.dr, self.rmax+self.dr, self.dr) * 1e-3
+        X = np.arange(self.dr, self.rmax, self.dr) * 1e-3
         if zr_flag == True:
             zr = self.zr
             if type(zr) == int:
@@ -184,7 +225,7 @@ class Env:
                 X = np.array([X[-1]]) # only compute last range pos
             r = Dom(X, zr)
         else:
-            Z = np.arange(self.dz, self.zmax+self.dz, self.dz)
+            Z = np.arange(self.dz, self.zmax, self.dz)
             r = Dom(X, Z)
         pos = Pos(s,r)
         if (type(pos.s.depth) == int) or (type(pos.s.depth) == float):
@@ -198,7 +239,7 @@ class Env:
         self.pos = pos
         return pos
 
-    def write_env_file(self, name, model='kraken', zr_flag=True, zr_range_flag=True,beam=None, custom_r=None):
+    def write_env_file(self, name, model='kraken', zr_flag=True, zr_range_flag=True,beam=None, custom_r=None,append=False,sigma=None):
         """
         Input 
         name : string
@@ -211,6 +252,12 @@ class Env:
             If true, only evaluates the field at rmax, the assumed range position. If false, it will evaluate the field at each range point
         beam : Beam object 
             For running bellhop, Beam sets parameters for ray trace
+        custom_r : np 1d array 
+            specific ranges. if None, then dr and rmax will be used for making the range of eval.    
+        append : boolean    
+            if  append is true, then writing will happen in append form (for Kraken range-dependent calculations) 
+        sigma : list
+            optional surface roughnesses (RMS height variation in meters)
         Output:
             None. Writes a .env file to the path given in name. 
         Export env info to an .env file for kraken
@@ -218,14 +265,21 @@ class Env:
         Therefore, take the bottom layer (that's designed to kill the pe field) and turn it into a halfspace
         """
         cw_shape = self.cw.shape
-        two_d_flag = False
-        if len(cw_shape) == 2:
+        bathy_grid = self.rbzb
+        two_d_bathy_flag = False
+        two_d_ssp_flag = False
+        if self.rp_ss.size == 2:
             if cw_shape[1] > 1:
-                two_d_flag = True
-        if two_d_flag == True:
-            write_bathy(name, self.rbzb)
+                two_d_ssp_flag = True
+        if bathy_grid.shape[0] > 1:
+            two_d_bathy_flag = True
+
+        if two_d_bathy_flag == True:
+            write_bathy(name, bathy_grid)
+        if two_d_ssp_flag == True:
             write_ssp(name, self.cw, self.rp_ss)
         cw = self.cw[:,0] # only use first range prof for env file
+        #print('testinggg', self.z_ss.size, cw.size)
         ssp1 = SSPraw(self.z_ss, cw, np.zeros(cw.shape), np.ones(cw.shape),np.zeros(cw.shape), np.zeros(cw.shape))
         ssps = [ssp1]
         nmedia = len(self.z_sb)//2 +1
@@ -251,24 +305,33 @@ class Env:
         # add  halfspace after last layer
         hs = HS(self.cb[-1,0], 0, self.rhob[-1,0], self.attn[-1,0], 0)
 #        hs = HS()
-        if two_d_flag == True:
-                top_bndry = TopBndry('QVW')
+        if two_d_ssp_flag == True:
+            top_bndry = TopBndry('QVW')
         else:
             top_bndry = TopBndry('CVW')
-        bot_bndry = BotBndry('A', hs)
+        if two_d_bathy_flag == True:
+            bot_bndry = BotBndry('A*', hs)
+        else:
+            top_bndry = TopBndry('CVW')
+            bot_bndry = BotBndry('A', hs)
         bndry = Bndry(top_bndry, bot_bndry)
         pos = self.pop_Pos(zr_flag=zr_flag, zr_range_flag=zr_range_flag, custom_r=custom_r)
         cint = cInt(np.min(cw), self.cb[0][0])
-        cint = cInt(1470, 1650)
-        write_env(name, model, 'Auto gen from Env object', self.freq, ssp, bndry, pos, beam, cint, self.rmax)
+        #cint = cInt(1470, 1650)
+        if np.max(self.z_ss) > 4000: # deep water
+            cint = cInt(np.min(cw), np.max(cw))
+        if append==True:
+            write_env(name, model, 'Auto gen from Env object', self.freq, ssp, bndry, pos, beam, cint, self.rmax/1000,append)
+        else:
+            write_env(name, model, 'Auto gen from Env object', self.freq, ssp, bndry, pos, beam, cint, self.rmax/1000)
         return
                 
-    def write_flp(self, name, source_opt, zr_flag=True, zr_range_flag=True, custom_r=None):
+    def write_flp(self, name, source_opt, zr_flag=True, zr_range_flag=True, custom_r=None,**kwargs):
         pos = self.pop_Pos(zr_flag=zr_flag, zr_range_flag=zr_range_flag, custom_r=custom_r)
-        write_fieldflp(name, source_opt, pos)
+        write_fieldflp(name, source_opt, pos,**kwargs)
         return
 
-    def run_model(self, model, dir_name, name, beam=None,zr_flag=True,zr_range_flag=True, custom_r=None, tilt_angle=0):
+    def run_model(self, model, dir_name, name, beam=None,zr_flag=True,zr_range_flag=True, custom_r=None, tilt_angle=0,normal_krak=False,precomputed_modes=False):
         """
         Inputs
         model - string
@@ -293,8 +356,59 @@ class Env:
         """             
         if model=='kraken':
             self.write_env_file(dir_name+name, model=model, zr_flag=zr_flag, zr_range_flag=zr_range_flag, custom_r=custom_r)
-            system('cd ' + dir_name + ' && krakenc.exe ' + name)
+            if normal_krak == False:
+                system('cd ' + dir_name + ' && krakenc.exe ' + name)
+            else:
+                system('cd ' + dir_name + ' && kraken.exe ' + name)
             self.write_flp(dir_name + name, 'R',zr_flag=zr_flag,zr_range_flag=zr_range_flag, custom_r=custom_r)
+            system('cd ' + dir_name + ' && field.exe ' + name)
+            [ PlotTitle, PlotType, freqVec, atten, pos, pressure ] = read_shd(dir_name + name + '.shd')
+            x = np.squeeze(pressure)
+        elif model=='kraken_rd':
+            """ Range dependent kraken """
+            twod_ssp = False
+            twod_bathy = False
+            if self.rbzb.shape[0] > 1:
+                twod_bathy = True
+                print('two bathy')
+            if self.rp_ss.size > 1:
+                twod_ssp = True
+            if (twod_bathy == True) & (twod_ssp == True):
+                if self.rp_ss != rbzb[:,0]:
+                    raise ValueError('SSP updates don\'t agree with bathy updates (bathy points r should agree with cw rp_ss points)')
+            if twod_bathy == True:
+                cw = deepcopy(self.cw)
+                z_ss = deepcopy(self.z_ss)
+                rp_ss = deepcopy(self.rp_ss)
+                rbzb = deepcopy(self.rbzb)
+                rbzb[:,0] /= 1000 # convert to kilometers
+                num_profs = rbzb.shape[0]
+                for i in range(num_profs):
+                    dummy_env = deepcopy(self)
+                    if twod_ssp == True:
+                        dummy_env.cw = cw[:,i]
+                        dummy_env.rp_ss = np.array([0])
+                    bottom_depth = rbzb[i,1]
+                    dummy_env.z_ss = z_ss[z_ss < bottom_depth]
+                    dummy_env.z_ss[-1] = bottom_depth
+                    dummy_env.z_sb[0] = bottom_depth
+                    dummy_env.rbzb = rbzb[i,:].reshape((1,2))
+                    #dummy_env.add_field_params(dummy_env.dz, dummy_env.z_ss[-1], dummy_env.dr, dummy_env.rmax)
+                    if i == 0:
+                        dummy_env.write_env_file(dir_name+name, model='kraken', zr_flag=zr_flag, beam=beam, zr_range_flag=zr_range_flag,custom_r=custom_r)
+                    else:
+                        dummy_env.write_env_file(dir_name+name, model='kraken', zr_flag=zr_flag, beam=beam, zr_range_flag=zr_range_flag,custom_r=custom_r,append=True)
+            if precomputed_modes == False:
+                print('Computing modes')
+                if normal_krak == False:
+                    print('Using KRAKENC')
+                    system('cd ' + dir_name + ' && krakenc.exe ' + name)
+                else:
+                    system('cd ' + dir_name + ' && kraken.exe ' + name)
+
+            rProf = rbzb[:,0]
+            kwargs = {'rProf':rProf, 'NProf':num_profs}
+            self.write_flp(dir_name + name, 'RCOC',zr_flag=zr_flag,zr_range_flag=zr_range_flag, custom_r=custom_r,**kwargs)
             system('cd ' + dir_name + ' && field.exe ' + name)
             [ PlotTitle, PlotType, freqVec, atten, pos, pressure ] = read_shd(dir_name + name + '.shd')
             x = np.squeeze(pressure)
@@ -307,8 +421,12 @@ class Env:
             pos = None
         elif model=='kraken_custom_r':
             self.write_env_file(dir_name+name, model='kraken', zr_flag=zr_flag, zr_range_flag=zr_range_flag, custom_r=custom_r)
-            system('cd ' + dir_name + ' && krakenc.exe ' + name)
             fname = dir_name + name + '.mod'
+            if precomputed_modes == False:
+                if normal_krak == False:
+                    system('cd ' + dir_name + ' && krakenc.exe ' + name)
+                else:
+                    system('cd ' + dir_name + ' && kraken.exe ' + name)
             modes = read_modes(**{'fname':fname, 'freq':self.freq})
             self.modes = modes
             pos = self.pos
@@ -338,7 +456,7 @@ class Env:
         self.cw = ssp
         return
 
-    def gen_env_fig(self, rs):
+    def gen_env_fig(self):
         """
         Generate a figure showing the SSP, receiver locations, source location
          and some text with the source frequency
@@ -348,20 +466,25 @@ class Env:
         zr = self.zr
         zs = self.zs
         x, y = get_sea_surface(self.cw)
-        ax1.plot([np.min(self.cw), np.max(self.cw)], [self.z_sb[0]]*2, color='tab:brown')
-        ax1.plot(x, y, color='b')
+        ax1.plot([np.min(self.cw), np.max(self.cw)], [self.z_sb[0]]*2, color='k')
+        #ax1.plot(x, y, color='b')
         ax1.set_xlabel('SSP (m/s)')
         ax1.set_ylabel('Depth (m)')
-        ax2.set_xlabel('Range (m)')
         ax1.invert_yaxis()
-        ax2.scatter(0, zr[0], color='k', alpha=1, label='SSP')
-        ax2.scatter([0]*zr.size, zr, color='r', label='Receive array')
-        ax2.scatter(rs, zs, color='b', marker='+', label='Source position')
-        ax1.plot(self.cw, self.z_ss, color='k', label='SSP')
-        fig.suptitle('Environmental configuration\n(Source frequency is ' + str(self.freq) + ' Hz)')
-        ax2.legend()
+        cline, = ax1.plot(self.cw, self.z_ss, color='b', label='SSP')
+        if self.rbzb.shape[0] > 1:
+            bline, = ax2.plot(self.rbzb[:,0], self.rbzb[:,1],color='k', label='Bathy')
+            ra, = ax2.plot([np.max(self.rbzb[:,0])]*zr.size, zr, 'r.', label='Receive array')
+            s, = ax2.plot([0]*zs.size, zs, 'k.', label='Source')
+            #ax2.set_xlim([-10, np.max(self.rbzb[:,0])+10])
+            plt.legend([cline, bline, ra, s], ['SSP', 'bathy', 'receiver', 'source'])
+        else:
+            ax2.scatter([0]*zr.size, zr, color='r', label='Receive array')
+            ax2.scatter([10]*zs.size, zs, color='k', label='Source')
+            ax2.set_xlim([-1, 11])
+        #ax2.set_xticks([0, 5000])
+        ax2.set_xlabel('Source-receiver range')
         return fig
-
         
 class SwellexEnv(Env):
     """
@@ -465,7 +588,7 @@ class SwellexEnv(Env):
         for r_ind, source_r in enumerate(r):
             D = dofr(source_r) 
 
-            if abs(D - last_D) > 1:
+            if abs(D - last_D) > 5:
                 """ Recomputing modes """
                 last_D = D
                 self.change_depth(D)
@@ -544,7 +667,3 @@ class EnvFactory:
         if not builder:
             raise KeyError(key)
         return builder(**kwargs)
-        
-
-        
-    
