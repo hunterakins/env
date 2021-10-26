@@ -30,7 +30,7 @@ def extrap_top_pt(ctd_arr):
     return ctd_arr
 
 def get_ssp_info(ctd_key, zmax):
-    ctd_full_arr = read_ssp_key(ctd_key)
+    ctd_arr = read_ssp_key(ctd_key)
     ctd_arr = extrap_top_pt(ctd_arr) 
     z_ss = ctd_arr[:,0]
     z_ss[-1] = zmax
