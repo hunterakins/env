@@ -1,7 +1,7 @@
 import numpy as np
 from matplotlib import pyplot as plt
 from swmfex21.custom_bathy import get_custom_bathy_r
-from swmfex21.ctd_proc import read_ctd
+from swmfex21.ctd_proc import read_ssp_key
 from env.env.env_loader import Env
 
 """
@@ -29,9 +29,8 @@ def extrap_top_pt(ctd_arr):
         ctd_arr = np.vstack((new_row, ctd_arr))
     return ctd_arr
 
-def get_ssp_info(ctd_num, zmax):
-    ctd_full_arr = read_ctd(ctd_num)
-    ctd_arr = ctd_full_arr[:,:2]
+def get_ssp_info(ctd_key, zmax):
+    ctd_full_arr = read_ssp_key(ctd_key)
     ctd_arr = extrap_top_pt(ctd_arr) 
     z_ss = ctd_arr[:,0]
     z_ss[-1] = zmax
@@ -78,9 +77,9 @@ class SWMFEXBuilder:
             attn = kwargs['attn']
         if 'z_sb' in kwargs.keys():
             z_sb = kwargs['z_sb']
-        if 'ctd_num' in kwargs.keys():
-            print('updating dfault profile to use CTD ' + str(kwargs['ctd_num']))
-            z_ss, rp_ss, cw = get_ssp_info(kwargs['ctd_num'],zmax)
+        if 'ctd_key' in kwargs.keys():
+            print('updating dfault profile to use CTD ' + kwargs['ctd_key'])
+            z_ss, rp_ss, cw = get_ssp_info(kwargs['ctd_key'],zmax)
         env = Env(z_ss, rp_ss, cw, z_sb, rp_sb, cb, rhob, attn, rbzb)
         self._instance = env
         return env
