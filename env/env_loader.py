@@ -187,14 +187,14 @@ class Env:
         self.env_dict['zr'] = zr
         return
 
-    def init_pyram(self,ndz=1, ndr=1):
+    def init_pyram(self,ndz=1, ndr=1,source='point'):
         """
         Initialize a pyram object from the env info
         Optional striding on the grid 
         """
         #freq, zs, zr, z_ss, rp_ss, cw = self.env_dict['freq'], self.env_dict['zs'], self.env_dict['zr'], self.env_dict['z_ss'], self.env_dict['rp_ss'], self.env_dict['cw']  
         env_dict = deepcopy(self.env_dict)
-        kwargs = {'ndz':ndz, 'ndr':ndr}
+        kwargs = {'ndz':ndz, 'ndr':ndr,'source':source}
         print("WARNING: THIS WILL ONLY WORK IF ZR AND ZS ARE FLOATS, NOT ARRAYS")
         pyram = PyRAM(env_dict['freq'], env_dict['zs'], env_dict['zr'],
                       env_dict['z_ss'], env_dict['rp_ss'], env_dict['cw'],

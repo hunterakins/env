@@ -51,7 +51,7 @@ class SWMFEXBuilder:
         print('Warning: if using env for pyram, z_sb must be\
                  relative to lowest val in z_ss (so first point is 0')
         BATHY_CTD_NUM = 2 
-        CTD_NUM = 2 
+        CTD_KEY = '2'
 
         r,z  = get_custom_bathy_r(BATHY_CTD_NUM)
         r = r*1e3 # convert to meters
@@ -61,7 +61,7 @@ class SWMFEXBuilder:
 
         zmax = np.max(rbzb[:,1])
 
-        z_ss, rp_ss, cw = get_ssp_info(CTD_NUM, zmax)
+        z_ss, rp_ss, cw = get_ssp_info(CTD_KEY, zmax)
 
         z_sb = np.array([rbzb[0,1]]) 
         rp_sb = np.array([0.0])
