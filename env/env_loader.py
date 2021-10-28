@@ -334,7 +334,7 @@ class Env:
         write_fieldflp(name, source_opt, pos,**kwargs)
         return
 
-    def run_model(self, model, dir_name, name, beam=None,zr_flag=True,zr_range_flag=True, custom_r=None, tilt_angle=0,normal_krak=False,precomputed_modes=False):
+    def run_model(self, model, dir_name, name, beam=None,zr_flag=True,zr_range_flag=True, custom_r=None, tilt_angle=0,normal_krak=False,precomputed_modes=False,point_source=True):
         """
         Inputs
         model - string
@@ -363,7 +363,10 @@ class Env:
                 system('cd ' + dir_name + ' && krakenc.exe ' + name)
             else:
                 system('cd ' + dir_name + ' && kraken.exe ' + name)
-            self.write_flp(dir_name + name, 'R',zr_flag=zr_flag,zr_range_flag=zr_range_flag, custom_r=custom_r)
+            if point_source == False:
+                self.write_flp(dir_name + name, 'X',zr_flag=zr_flag,zr_range_flag=zr_range_flag, custom_r=custom_r)
+            else:
+                self.write_flp(dir_name + name, 'R',zr_flag=zr_flag,zr_range_flag=zr_range_flag, custom_r=custom_r)
             system('cd ' + dir_name + ' && field.exe ' + name)
             [ PlotTitle, PlotType, freqVec, atten, pos, pressure ] = read_shd(dir_name + name + '.shd')
             x = np.squeeze(pressure)
