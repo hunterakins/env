@@ -219,7 +219,7 @@ class Env:
         """
         sd = self.zs
         s = Source(sd)
-        X = np.arange(self.dr, self.rmax, self.dr) * 1e-3
+        X = np.arange(self.dr, self.rmax+self.dr/2, self.dr) * 1e-3
         if zr_flag == True:
             zr = self.zr
             if type(zr) == int:
@@ -363,6 +363,9 @@ class Env:
                 system('cd ' + dir_name + ' && krakenc.exe ' + name)
             else:
                 system('cd ' + dir_name + ' && kraken.exe ' + name)
+            fname = dir_name + name + '.mod'
+            modes = read_modes(**{'fname':fname, 'freq':self.freq})
+            self.modes = modes
             if point_source == False:
                 self.write_flp(dir_name + name, 'X',zr_flag=zr_flag,zr_range_flag=zr_range_flag, custom_r=custom_r)
             else:
@@ -421,10 +424,16 @@ class Env:
         elif model=='pe':
             print('hey man you should implement this')
         elif model=='bellhop':
+            print('writing env')
             self.write_env_file(dir_name+name, model=model, zr_flag=zr_flag, beam=beam, zr_range_flag=zr_range_flag,custom_r=custom_r)
             system('cd ' + dir_name + ' && bellhop.exe ' + name)
-            x = None
-            pos = None
+            if beam.RunType[0] == 'C' or beam.RunType[0]=='I':
+                [ PlotTitle, PlotType, freqVec, atten, pos, pressure ] = read_shd(dir_name + name + '.shd')
+                x = np.squeeze(pressure)
+                print(x.shape)
+            else:
+                x = None
+                pos = None
         elif model=='kraken_custom_r':
             self.write_env_file(dir_name+name, model='kraken', zr_flag=zr_flag, zr_range_flag=zr_range_flag, custom_r=custom_r)
             fname = dir_name + name + '.mod'
