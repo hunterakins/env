@@ -4,7 +4,7 @@ from .json_reader import read_json, write_json
 from pyram.pyram.PyRAM import PyRAM
 from copy import deepcopy
 from pyat.pyat.env import SSPraw, HS, TopBndry, BotBndry, Bndry, Source, Pos, Dom, SSP, Beam, cInt
-from pyat.pyat.readwrite import write_env, write_fieldflp, read_shd, write_bathy, write_ssp, read_modes
+from pyat.pyat.readwrite import write_env, write_fieldflp, read_shd, write_bathy, write_ssp, read_modes, write_sbp
 from swellex.CTD.read_ctd import parse_prn
 from scipy.interpolate import interp1d
 from env.env.s5_helpers import s5_approach_D, get_range_correction
@@ -12,6 +12,7 @@ from pandas import read_feather
 import scipy
 import feather
 from os import system
+import time
 
 '''
 Description:
@@ -20,7 +21,38 @@ class to retrieve environmental parameters for running models
 Author: Hunter Akins
 '''
 
-def get_custom_r_modal_field(modes, r, zs, zr, tilt_angle=0):
+
+def get_rmat_vand(krs, grid_r):
+    """
+    Given uniform grid of n  ranges and column vector of m 
+    wavenumbers krs, compute "rmat" --> rmat_{mn} = e^{jk_{m}r_{n}}
+    Doesn't compute the range spreading and attenuation terms
+    Use the fact that you can factor out the first column of rmat,
+    and the remaining matrix is vandermonde.
+    Python is quick with the vandermonde
+    """
+    #r_mat= np.outer(krs, r-r_corr[index])
+    n = grid_r.size
+    m = krs.size
+    r0 = grid_r[0]
+    dr = grid_r[1] - grid_r[0]
+    offset = np.exp(complex(0,1)*krs.real*r0).reshape((m,1)).astype(np.complex128)
+    base = np.exp(complex(0,1)*krs.real*dr).reshape(m).astype(np.complex128)
+    exp_mat = np.vander(base, N=n, increasing=True)
+    rmat = exp_mat * offset
+    return rmat
+
+def get_vand_check(r):
+    """
+    Vandermonde only works if r is evenly spaced grid of more than 2 elements
+    """
+    if r.size < 2:
+        return False
+    if len(set(r[1:] - r[:-1])) > 1:
+        return False
+    return True
+        
+def get_custom_r_modal_field(modes, r, zs, zr, tilt_angle=0,point_source=True, vand=False):
     """
     Given modal object, range grid r, source depth(s) zs 
     and receiver depths zr (corresponding to the modes obj)
@@ -35,26 +67,95 @@ def get_custom_r_modal_field(modes, r, zs, zr, tilt_angle=0):
     zr - numpy 1d array of floats (or possibly ints)
         receiver depths
     """
+    vand_check = get_vand_check(r)
+    if vand==True and vand_check:
+        p = get_custom_r_modal_field_vand(modes, r, zs, zr, tilt_angle, point_source)
+        return p
+
     if (type(zs) == int) or (type(zs) == float) or (type(zs) == np.float64):
         zs = np.array([zs])
     r_corr = get_range_correction(zs, tilt_angle)
     p = np.zeros((len(zs), len(zr), len(r)), dtype=np.complex128)
+    
     for index, source_depth in enumerate(zs):
         krs = modes.k
         phi = modes.get_receiver_modes(zr)
         strength = modes.get_source_strength(source_depth)
         modal_matrix = strength*phi
-        r_mat= np.outer(krs, r-r_corr[index])
+        modal_matrix /= np.sqrt(krs.real)
         """
         Note...kraken c has the attenuation as a negative
         imaginary part to k
-        The implied convention is exp(-i k r) transform...
+        The implied convention in KRAKEN is exp(i -k r) is outward radiation
         """
-        range_dep = np.exp(complex(0,1)*r_mat.conj()) / np.sqrt(r_mat.real)
+        r_mat= np.outer(krs, r-r_corr[index])
+        if point_source == True:
+            range_dep = np.exp(complex(0,1)*r_mat.real) / np.sqrt(r_mat.real)
+        else:
+            range_dep = np.exp(complex(0,1)*r_mat.conj()) / np.sqrt(krs.reshape(krs.size,1).real) # extra sqrt to get a total of 1/k
         source_p = modal_matrix@range_dep
-        source_p *= -np.exp(complex(0, 1)*np.pi/4)
-        source_p /= np.sqrt(8*np.pi)
-        source_p = source_p.conj()
+        if point_source == True:
+            """ Green's function as derived in JKPS eq. 5.14 """
+            source_p *= np.exp(complex(0, 1)*np.pi/4)
+            source_p /= np.sqrt(8*np.pi)
+        else:
+            source_p *= complex(0,1) /2
+        p[index, ...] = source_p
+    return p
+
+def get_custom_r_modal_field_vand(modes, r, zs, zr, tilt_angle=0,point_source=True):
+    """
+    Given modal object, range grid r, source depth(s) zs 
+    and receiver depths zr (corresponding to the modes obj)
+    Compute the field at the grid (zr X r)
+    Use vandermonde matrix to speed up calculation by a factor of two
+    Requires a uniform grid spacing, and may become less accurate at large r
+    Input
+    modes - Modes obj (pyat)
+    r - numpy 1d array
+        grid of range positions at which to evaluate the field
+        IN METERS
+    zs - np array
+        source depths (compute for each depth)
+    zr - numpy 1d array of floats (or possibly ints)
+        receiver depths
+    """
+    if (type(zs) == int) or (type(zs) == float) or (type(zs) == np.float64):
+        zs = np.array([zs])
+    r_corr = get_range_correction(zs, tilt_angle)
+    p = np.zeros((len(zs), len(zr), len(r)), dtype=np.complex128)
+    
+    for index, source_depth in enumerate(zs):
+        krs = modes.k
+        phi = modes.get_receiver_modes(zr)
+        strength = modes.get_source_strength(source_depth)
+        modal_matrix = strength*phi
+        modal_matrix /= np.sqrt(krs.real)
+        """
+        Note...kraken c has the attenuation as a negative
+        imaginary part to k
+        The implied convention in KRAKEN is exp(i -k r) is outward radiation
+        """
+        range_dep = get_rmat_vand(krs, r)
+
+        if np.any(krs.imag): # add attenuation
+            dr = r[1]-r[0]
+            attn_mat=np.zeros((krs.size,r.size))
+            for i in range(krs.size):
+                attn_mat[i,:] = np.exp(-r*abs(krs[i]).imag)
+            range_dep *= attn_mat
+
+        if point_source == True:
+            range_dep /= np.sqrt(r-r_corr[index])
+        else:
+            range_dep /= np.sqrt(krs.real) # already divided by sqrt krs, do it one more time for 1/k
+        source_p = modal_matrix@range_dep
+        if point_source == True:
+            """ Green's function as derived in JKPS eq. 5.14 """
+            source_p *= np.exp(complex(0, 1)*np.pi/4)
+            source_p /= np.sqrt(8*np.pi)
+        else:
+            source_p *= complex(0,1) /2
         p[index, ...] = source_p
     return p
 
@@ -95,7 +196,6 @@ def get_custom_track_modal_field(modes, r, zs, zr, tilt_angle=0):
     source_p = modal_matrix@range_dep
     source_p *= -np.exp(complex(0, 1)*np.pi/4)
     source_p /= np.sqrt(8*np.pi)
-    source_p = source_p.conj()
     return source_p
 
 def get_sea_surface(cw):
@@ -195,7 +295,10 @@ class Env:
         #freq, zs, zr, z_ss, rp_ss, cw = self.env_dict['freq'], self.env_dict['zs'], self.env_dict['zr'], self.env_dict['z_ss'], self.env_dict['rp_ss'], self.env_dict['cw']  
         env_dict = deepcopy(self.env_dict)
         kwargs = {'ndz':ndz, 'ndr':ndr,'source':source}
-        print("WARNING: THIS WILL ONLY WORK IF ZR AND ZS ARE FLOATS, NOT ARRAYS")
+        if type(env_dict['zr']) != float:       
+            env_dict['zr'] = float(env_dict['zr'])
+        if type(env_dict['zs']) != float:       
+            env_dict['zs'] = float(env_dict['zs'])
         pyram = PyRAM(env_dict['freq'], env_dict['zs'], env_dict['zr'],
                       env_dict['z_ss'], env_dict['rp_ss'], env_dict['cw'],
                       env_dict['z_sb'], env_dict['rp_sb'], env_dict['cb'],
@@ -334,7 +437,7 @@ class Env:
         write_fieldflp(name, source_opt, pos,**kwargs)
         return
 
-    def run_model(self, model, dir_name, name, beam=None,zr_flag=True,zr_range_flag=True, custom_r=None, tilt_angle=0,normal_krak=False,precomputed_modes=False,point_source=True):
+    def run_model(self, model, dir_name, name, beam=None,zr_flag=True,zr_range_flag=True, custom_r=None, tilt_angle=0,normal_krak=False,precomputed_modes=False,point_source=True,beam_pattern=None,vand=True):
         """
         Inputs
         model - string
@@ -359,10 +462,12 @@ class Env:
         """             
         if model=='kraken':
             self.write_env_file(dir_name+name, model=model, zr_flag=zr_flag, zr_range_flag=zr_range_flag, custom_r=custom_r)
-            if normal_krak == False:
-                system('cd ' + dir_name + ' && krakenc.exe ' + name)
-            else:
-                system('cd ' + dir_name + ' && kraken.exe ' + name)
+            if precomputed_modes == False:
+                print('computing normal modes')
+                if normal_krak == False:
+                    system('cd ' + dir_name + ' && krakenc.exe ' + name)
+                else:
+                    system('cd ' + dir_name + ' && kraken.exe ' + name)
             fname = dir_name + name + '.mod'
             modes = read_modes(**{'fname':fname, 'freq':self.freq})
             self.modes = modes
@@ -424,8 +529,9 @@ class Env:
         elif model=='pe':
             print('hey man you should implement this')
         elif model=='bellhop':
-            print('writing env')
             self.write_env_file(dir_name+name, model=model, zr_flag=zr_flag, beam=beam, zr_range_flag=zr_range_flag,custom_r=custom_r)
+            if type(beam_pattern) != type(None):
+                write_sbp(dir_name + name, beam_pattern)
             system('cd ' + dir_name + ' && bellhop.exe ' + name)
             if beam.RunType[0] == 'C' or beam.RunType[0]=='I':
                 [ PlotTitle, PlotType, freqVec, atten, pos, pressure ] = read_shd(dir_name + name + '.shd')
@@ -446,9 +552,11 @@ class Env:
             self.modes = modes
             pos = self.pos
             if zr_flag == True:
-                x = get_custom_r_modal_field(modes, custom_r, self.zs, self.zr, tilt_angle=tilt_angle)
+                x = get_custom_r_modal_field(modes, custom_r, self.zs, self.zr, tilt_angle=tilt_angle,point_source=point_source,vand=vand)
             else:
-                x = get_custom_r_modal_field(modes, custom_r, self.zs, pos.r.depth, tilt_angle=tilt_angle)
+                x = get_custom_r_modal_field(modes, custom_r, self.zs, pos.r.depth, tilt_angle=tilt_angle,point_source=point_source, vand=vand)
+            pos.r.range *= 1e3 # normally whenreading in shd I get r in meters, but here I have to manually vcorrect
+            x = np.squeeze(x)
         else:
             raise ValueError('model input isn\'t supported')
         return x, pos
@@ -682,3 +790,5 @@ class EnvFactory:
         if not builder:
             raise KeyError(key)
         return builder(**kwargs)
+
+

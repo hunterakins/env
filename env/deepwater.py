@@ -22,7 +22,7 @@ cw[:,0] = alphaR
 
 cb = 1600.0
 pb = 1.5
-ab = .5
+ab = 0.0 # no attenuation
 rmax = 100*1e3
 dr = 100
 dz = 20

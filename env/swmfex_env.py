@@ -48,8 +48,6 @@ class SWMFEXBuilder:
     def __call__(self, **kwargs):
         """ DIFFERENT CTDS GIVE DIFFERENT BATHY FILES. 
         2 and 3 were both relevant to the survey used """
-        print('Warning: if using env for pyram, z_sb must be\
-                 relative to lowest val in z_ss (so first point is 0')
         BATHY_CTD_NUM = 2 
         CTD_KEY = '2'
 
@@ -78,7 +76,7 @@ class SWMFEXBuilder:
         if 'z_sb' in kwargs.keys():
             z_sb = kwargs['z_sb']
         if 'ctd_key' in kwargs.keys():
-            print('updating dfault profile to use CTD ' + kwargs['ctd_key'])
+            #print('updating dfault profile to use CTD ' + kwargs['ctd_key'])
             z_ss, rp_ss, cw = get_ssp_info(kwargs['ctd_key'],zmax)
         env = Env(z_ss, rp_ss, cw, z_sb, rp_sb, cb, rhob, attn, rbzb)
         self._instance = env
